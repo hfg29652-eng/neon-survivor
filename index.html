@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Survivor - Mobile</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: 'Courier New', Courier, monospace; color: #fff; touch-action: none; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; z-index: 10; }
+        .stat { font-size: 18px; margin-bottom: 5px; text-shadow: 2px 2px #000; }
+        
+        /* Mobile Joystick Styles */
+        #joystick-container {
+            position: absolute;
+            bottom: 50px;
+            left: 50px;
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 20;
+        }
+        #joystick-knob {
+            width: 50px;
+            height: 50px;
+            background: #0ff;
+            border-radius: 50%;
+            box-shadow: 0 0 15px #0ff;
+        }
+
+        #gamblePrompt { position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%); font-size: 20px; color: #0ff; display: none; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 5px; }
+        #gameOver { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; background: #0ff; border: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="stat">HP: <span id="health">100</span></div>
+        <div class="stat">Gold: <span id="gold">0</span></div>
+        <div class="stat">Kills: <span id="kills">0</span></div>
+        <div class="stat">Welle: <span id="wave">1</span></div>
+    </div>
+
+    <div id="joystick-container">
+        <div id="joystick-knob"></div>
+    </div>
+
+    <div id="gamblePrompt" onclick="tryGamble()">Tippe hier zum Gamblen!</div>
+    <div id="gameOver">
+        <h1>GAME OVER</h1>
+        <p>Kills: <span id="finalKills">0</span></p>
+        <p>Gold: <span id="finalGold">0</span></p>
+        <button onclick="location.reload()">Nochmal</button>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Spielvariablen
+        let gameActive = true;
+        let gold = 0;
+        let kills = 0;
+        let wave = 1;
+        let screenShake = 0;
+
+        // Steuerungsvariablen
+        let mouseX = canvas.width / 2, mouseY = canvas.height / 2;
+        let joystickActive = false;
+        let joystickVector = { x: 0, y: 0 };
+        const joystickContainer = document.getElementById('joystick-container');
+        const joystickKnob = document.getElementById('joystick-knob');
+
+        const player = {
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            size: 20,
+            health: 100,
+            maxHealth: 100,
+            speed: 5
+        };
+
+        const playerUpgrades = {
+            speed: 0,
+            damage: 0
+        };
+
+        let enemies = [];
+        let bullets = [];
+        let coins = [];
+        let particles = [];
+        let powerups = [];
+        let orbitingObjects = [];
+
+        // --- STEUERUNG (PC & MOBILE) ---
+
+        // Maus für Blickrichtung & Schießen (PC)
+        window.addEventListener('mousemove', (e) => { 
+            mouseX = e.clientX; 
+            mouseY = e.clientY; 
+        });
+        window.addEventListener('mousedown', (e) => {
+            if (e.target.tagName !== 'BUTTON' && e.target.id !== 'gamblePrompt') shoot();
+        });
+
+        // Joystick-Logik
+        joystickContainer.addEventListener('touchstart', handleJoystickStart, {passive: false});
+        window.addEventListener('touchmove', handleJoystickMove, {passive: false});
+        window.addEventListener('touchend', handleJoystickEnd);
+
+        // Schießen auf Mobile (wenn man nicht den Joystick berührt)
+        window.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            if (touch.target.id === 'gameCanvas') {
+                mouseX = touch.clientX;
+                mouseY = touch.clientY;
+                shoot();
+            }
+        }, {passive: false});
+
+        function handleJoystickStart(e) {
+            joystickActive = true;
+            handleJoystickMove(e);
+        }
+
+        function handleJoystickMove(e) {
+            if (!joystickActive) return;
+            e.preventDefault();
+            const touch = e.touches[0];
+            const rect = joystickContainer.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            let dx = touch.clientX - centerX;
+            let dy = touch.clientY - centerY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const maxRadius = rect.width / 2;
+
+            if (dist > maxRadius) {
+                dx = (dx / dist) * maxRadius;
+                dy = (dy / dist) * maxRadius;
+            }
+
+            // Joystick-Knopf bewegen
+            joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+
+            // Bewegungsvektor für den Spieler (normalisiert auf 0 bis 1)
+            joystickVector.x = dx / maxRadius;
+            joystickVector.y = dy / maxRadius;
+        }
+
+        function handleJoystickEnd() {
+            joystickActive = false;
+            joystickKnob.style.transform = `translate(0px, 0px)`;
+            joystickVector = { x: 0, y: 0 };
+        }
+
+        function tryGamble() {
+            const minGold = wave >= 3 ? 20 : 50;
+            if (gold >= minGold) {
+                gold -= minGold;
+                performGamble();
+            }
+        }
+
+        // Tastatur für Gamble auf PC
+        window.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'g') tryGamble();
+        });
+
+        // --- SPIEL LOGIK ---
+
+        function performGamble() {
+            const chance = Math.random();
+            if (chance < 0.3) addOrbitingBalls(3);
+            else if (chance < 0.5) addOrbitingSwords(2);
+            else if (chance < 0.8) player.health = Math.min(player.maxHealth, player.health + 50);
+            else playerUpgrades.damage += 2;
+            
+            screenShake = 20;
+            createParticles(player.x, player.y, '#fff', 50);
+        }
+
+        function createParticles(x, y, color, count) {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x, y,
+                    vx: (Math.random() - 0.5) * 10,
+                    vy: (Math.random() - 0.5) * 10,
+                    life: 1.0,
+                    size: Math.random() * 4,
+                    color
+                });
+            }
+        }
+
+        function shoot() {
+            if (!gameActive) return;
+            const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+            bullets.push({
+                x: player.x,
+                y: player.y,
+                vx: Math.cos(angle) * 10,
+                vy: Math.sin(angle) * 10,
+                size: 5
+            });
+        }
+
+        function updatePlayer() {
+            // Mobile Bewegung via Joystick
+            if (joystickVector.x !== 0 || joystickVector.y !== 0) {
+                player.x += joystickVector.x * (player.speed + playerUpgrades.speed);
+                player.y += joystickVector.y * (player.speed + playerUpgrades.speed);
+            } 
+            // PC Bewegung (Maus folgen) nur wenn kein Joystick genutzt wird
+            else if (!('ontouchstart' in window)) {
+                const dx = mouseX - player.x;
+                const dy = mouseY - player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 5) {
+                    player.x += (dx / dist) * (player.speed + playerUpgrades.speed);
+                    player.y += (dy / dist) * (player.speed + playerUpgrades.speed);
+                }
+            }
+
+            // Screen Bounds
+            player.x = Math.max(player.size, Math.min(canvas.width - player.size, player.x));
+            player.y = Math.max(player.size, Math.min(canvas.height - player.size, player.y));
+
+            if (player.health <= 0) gameOver();
+        }
+
+        function updateEnemies() {
+            if (enemies.length < wave * 3) {
+                enemies.push({
+                    x: Math.random() < 0.5 ? -50 : canvas.width + 50,
+                    y: Math.random() * canvas.height,
+                    size: 20,
+                    health: 10 + (wave * 5),
+                    maxHealth: 10 + (wave * 5),
+                    speed: 1 + Math.random() * 2,
+                    color: '#f0f'
+                });
+            }
+
+            enemies.forEach((enemy, index) => {
+                const dx = player.x - enemy.x;
+                const dy = player.y - enemy.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                enemy.x += (dx / dist) * enemy.speed;
+                enemy.y += (dy / dist) * enemy.speed;
+
+                if (dist < player.size + enemy.size) {
+                    player.health -= 0.5;
+                    screenShake = 5;
+                }
+            });
+        }
+
+        function updateOrbitingObjects() {
+            orbitingObjects.forEach(obj => {
+                obj.angle += obj.speed;
+                const ox = player.x + Math.cos(obj.angle) * obj.distance;
+                const oy = player.y + Math.sin(obj.angle) * obj.distance;
+
+                enemies = enemies.filter(enemy => {
+                    const edx = ox - enemy.x;
+                    const edy = oy - enemy.y;
+                    const edist = Math.sqrt(edx * edx + edy * edy);
+                    const hitLimit = enemy.size + (obj.type === 'sword' ? 25 : obj.size);
+
+                    if (edist < hitLimit) {
+                        enemy.health -= obj.type === 'sword' ? 1.5 : 0.8;
+                        if (Math.random() > 0.8) createParticles(ox, oy, obj.color, 2);
+                        if (enemy.health <= 0) {
+                            kills++; gold += 2;
+                            spawnCoin(enemy.x, enemy.y);
+                            createParticles(enemy.x, enemy.y, enemy.color, 15);
+                            if (kills % 10 === 0) wave++;
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+            });
+        }
+
+        function updateBullets() {
+            bullets = bullets.filter(b => {
+                b.x += b.vx; b.y += b.vy;
+                let hit = false;
+                enemies = enemies.filter(e => {
+                    const dist = Math.sqrt((b.x - e.x)**2 + (b.y - e.y)**2);
+                    if (dist < e.size + b.size) {
+                        e.health -= (5 + playerUpgrades.damage);
+                        hit = true;
+                        if (e.health <= 0) {
+                            kills++; gold += 2;
+                            spawnCoin(e.x, e.y);
+                            createParticles(e.x, e.y, e.color, 15);
+                            if (kills % 10 === 0) wave++;
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+                return !hit && b.x > 0 && b.x < canvas.width && b.y > 0 && b.y < canvas.height;
+            });
+        }
+
+        function updateCoins() {
+            coins = coins.filter(c => {
+                c.rotation += 0.1;
+                const dist = Math.sqrt((player.x - c.x)**2 + (player.y - c.y)**2);
+                if (dist < player.size + c.size) { gold += 5; return false; }
+                return true;
+            });
+        }
+
+        function spawnCoin(x, y) { coins.push({ x, y, size: 8, rotation: 0 }); }
+        
+        function updateParticles() {
+            particles = particles.filter(p => {
+                p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+                return p.life > 0;
+            });
+        }
+
+        function updatePowerups() {
+            powerups = powerups.filter(p => {
+                p.pulse += 0.1; p.rotation += 0.02;
+                const dist = Math.sqrt((player.x - p.x)**2 + (player.y - p.y)**2);
+                if (dist < player.size + p.size) {
+                    if (p.type === 'health') player.health = Math.min(player.maxHealth, player.health + 30);
+                    else if (p.type === 'speed') playerUpgrades.speed += 0.5;
+                    else if (p.type === 'damage') playerUpgrades.damage += 1;
+                    createParticles(p.x, p.y, '#fff', 20);
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        function spawnPowerup() {
+            const types = ['health', 'speed', 'damage'];
+            powerups.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                type: types[Math.floor(Math.random() * types.length)],
+                size: 15, pulse: 0, rotation: 0
+            });
+        }
+
+        function addOrbitingBalls(count) {
+            for (let i = 0; i < count; i++) {
+                orbitingObjects.push({
+                    type: 'ball', angle: (Math.PI * 2 / count) * i,
+                    distance: 80, size: 8, speed: 0.05, color: '#0ff'
+                });
+            }
+        }
+
+        function addOrbitingSwords(count) {
+            for (let i = 0; i < count; i++) {
+                orbitingObjects.push({
+                    type: 'sword', angle: (Math.PI * 2 / count) * i,
+                    distance: 120, size: 25, speed: 0.03, color: '#f0f'
+                });
+            }
+        }
+
+        function draw() {
+            let offsetX = (Math.random() - 0.5) * screenShake;
+            let offsetY = (Math.random() - 0.5) * screenShake;
+            if (screenShake > 0) screenShake *= 0.9;
+
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            coins.forEach(c => {
+                ctx.fillStyle = '#ff0';
+                ctx.beginPath();
+                ctx.ellipse(c.x, c.y, c.size * Math.abs(Math.cos(c.rotation)), c.size, 0, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            powerups.forEach(p => {
+                ctx.fillStyle = p.type === 'health' ? '#f00' : (p.type === 'speed' ? '#0ff' : '#ff0');
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.rotation);
+                const s = p.size + Math.sin(p.pulse) * 5;
+                ctx.fillRect(-s/2, -s/2, s, s);
+                ctx.restore();
+            });
+
+            orbitingObjects.forEach(obj => {
+                const ox = player.x + Math.cos(obj.angle) * obj.distance;
+                const oy = player.y + Math.sin(obj.angle) * obj.distance;
+                ctx.fillStyle = obj.color;
+                ctx.beginPath();
+                if(obj.type === 'sword') {
+                    ctx.save();
+                    ctx.translate(ox, oy);
+                    ctx.rotate(obj.angle + Math.PI/2);
+                    ctx.fillRect(-5, -obj.size, 10, obj.size * 2);
+                    ctx.restore();
+                } else {
+                    ctx.arc(ox, oy, obj.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+
+            bullets.forEach(b => {
+                ctx.fillStyle = '#0ff';
+                ctx.beginPath(); ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2); ctx.fill();
+            });
+
+            enemies.forEach(e => {
+                ctx.fillStyle = e.color;
+                ctx.beginPath(); ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#000'; ctx.fillRect(e.x - 15, e.y - e.size - 10, 30, 5);
+                ctx.fillStyle = '#f00'; ctx.fillRect(e.x - 15, e.y - e.size - 10, (e.health / e.maxHealth) * 30, 5);
+            });
+
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+            });
+            ctx.globalAlpha = 1;
+
+            // Spieler zeichnen
+            const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate(angle);
+            ctx.fillStyle = '#0ff';
+            ctx.shadowBlur = 20; ctx.shadowColor = '#0ff';
+            ctx.beginPath();
+            ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-15, 15);
+            ctx.closePath(); ctx.fill();
+            ctx.restore();
+
+            ctx.restore();
+
+            // UI Update
+            document.getElementById('health').textContent = Math.ceil(player.health);
+            document.getElementById('gold').textContent = gold;
+            document.getElementById('kills').textContent = kills;
+            document.getElementById('wave').textContent = wave;
+
+            const minGold = wave >= 3 ? 20 : 50;
+            document.getElementById('gamblePrompt').style.display = gold >= minGold ? 'block' : 'none';
+        }
+
+        function gameOver() {
+            gameActive = false;
+            document.getElementById('gameOver').style.display = 'flex';
+            document.getElementById('finalKills').textContent = kills;
+            document.getElementById('finalGold').textContent = gold;
+        }
+
+        function gameLoop() {
+            if (!gameActive) return;
+            updatePlayer();
+            updateOrbitingObjects();
+            updateBullets();
+            updateEnemies();
+            updateCoins();
+            updateParticles();
+            updatePowerups();
+            if (Math.random() < 0.005) spawnPowerup();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        gameLoop();
+    </script>
+</body>
+</html>
